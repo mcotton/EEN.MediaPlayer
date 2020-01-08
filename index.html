@@ -2,18 +2,20 @@
 <html>
 <body>
 <script src="/EEN.MediaPlayer.js"></script>
-<video id="videoElement" controls></video>
+<video id="videoElement" style="width: 100%; height:100%;" controls></video>
 <script>
     var flvjs = EEN.MediaPlayer.flvjs;
     if (flvjs.isSupported()) {
         var videoElement = document.getElementById('videoElement');
         var flvPlayer = flvjs.createPlayer({
             type: 'flv',
-            url: 'http://localhost:8000/video1.flv'
+            url: 'https://login.eagleeyenetworks.com/asset/play/video.flv?id=1003e10b&start_timestamp=stream_mcotton1234&end_timestamp=+30000&A=c012~a419b6e548ea58c9c4ea836de8d85f1a'
         });
         flvPlayer.attachMediaElement(videoElement);
         flvPlayer.load();
-        //flvPlayer.play();
+	
+	// Chrome complains about auto-playing, so comment out the following line
+        // flvPlayer.play();
     }
 </script>
 </body>
