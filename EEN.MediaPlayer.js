@@ -3457,7 +3457,7 @@ var TransmuxingController = function () {
             this._currentSegmentIndex = segmentIndex;
             var dataSource = this._mediaDataSource.segments[segmentIndex];
 
-            var ioctl = this._ioctl = new _ioController2.default(dataSource, this._config, segmentIndex);
+            var ioctl = this._ioctl = new _ioController2.default(dataSource, this._config, segmentIndex, this._mediaElement);
             ioctl.onError = this._onIOException.bind(this);
             ioctl.onSeeked = this._onIOSeeked.bind(this);
             ioctl.onComplete = this._onIOComplete.bind(this);
@@ -4595,6 +4595,7 @@ var FLVDemuxer = function () {
 
         this.TAG = 'FLVDemuxer';
 
+        this._keyframesOverride = config.keyframes;
         this._config = config;
         this._audio = new _audio.AudioPlayer(mediaElement);
         this._onError = null;
@@ -4893,7 +4894,10 @@ var FLVDemuxer = function () {
                         this._mediaInfo.fps = fps;
                     }
                 }
-                if (_typeof(onMetaData.keyframes) === 'object') {
+                if (this._keyframesOverride) {
+                    this._mediaInfo.hasKeyframesIndex = true;
+                    this._mediaInfo.keyframesIndex = this._keyframesOverride;
+                } else if (_typeof(onMetaData.keyframes) === 'object') {
                     // keyframes
                     this._mediaInfo.hasKeyframesIndex = true;
                     var keyframes = onMetaData.keyframes;
@@ -5588,6 +5592,11 @@ var FLVDemuxer = function () {
                     keyframe = true;
                 }
 
+                if (unitType === 6) {
+                    offset += lengthSize + naluSize;
+                    continue;
+                }
+
                 var data = new Uint8Array(arrayBuffer, dataOffset + offset, lengthSize + naluSize);
                 var unit = { type: unitType, data: data };
                 units.push(unit);
@@ -6141,24 +6150,60 @@ function startPlayback(config, element) {
         end = '+300000';
     }
 
-    var url = [window.location.protocol + '//' + window.location.host + '/asset/play/video.flv?' + 'id=' + config.esn, 'start_timestamp=' + start, 'end_timestamp=' + end].join('&');
+    var url = null;
+    if (!config.url) {
+        url = [window.location.protocol + '//' + config.domain + '/asset/play/video.flv?' + 'id=' + config.esn, 'start_timestamp=' + start, 'end_timestamp=' + end].join('&');
+    } else {
+        url = config.url;
+    }
+
+    var keyframeMeta = null;
+    if (config.keyframeData != null) {
+        var times = [];
+        var offsets = [];
+        var header = config.keyframeData['header'];
+        var headerSize = header['headersize'];
+        var gopOffset = header['gopoffset'];
+        var keyframes = config.keyframeData['keyframes'];
+
+        for (var i = 0; i < keyframes.length; i++) {
+            // array of fileindex, virtualts, virtual_offset
+            var keyframe = keyframes[i];
+            var ts = keyframe[2];
+            var offset = 0;
+            if (keyframe[0] === 0) {
+                offset = keyframe[1] + headerSize - gopOffset;
+            } else {
+                offset = keyframe[1];
+            }
+            times.push(ts);
+            offsets.push(offset);
+        }
+        keyframeMeta = { times: times, filepositions: offsets };
+    } else {
+        url += '&index=true';
+    }
 
     if (config.auth_key != null) {
         url += '&A=' + config.auth_key;
     }
 
+    var isLive = config.isLive();
+
     var options = {
+        keyframes: keyframeMeta,
         enableWorker: false,
         lazyLoadMaxDuration: 5 * 60,
         seekType: 'range',
         url: url,
-        isLive: config.isLive(),
+        isLive: isLive,
+        enableStashBuffer: !isLive,
         type: 'flv'
     };
 
     if (config.options) Object.assign(config.options, options);
 
-    var player = createPlayer(options);
+    var player = createPlayer(options, options);
     player.attachMediaElement(element);
     player.load();
     return player;
@@ -6196,12 +6241,15 @@ var MediaItem = function () {
     function MediaItem(esn) {
         _classCallCheck(this, MediaItem);
 
+        this.keyframeData = null;
         this.esn = esn;
         this.start = null;
         this.end = null;
         this.auth_key = null;
         this.api_key = null;
         this.options = null;
+        this.url = null;
+        this.domain = 'window.location.host';
     }
 
     _createClass(MediaItem, [{
@@ -6228,6 +6276,21 @@ var MediaItem = function () {
         key: 'setOptions',
         value: function setOptions(options) {
             this.options = options;
+        }
+    }, {
+        key: 'setKeyframeData',
+        value: function setKeyframeData(data) {
+            this.keyframeData = data;
+        }
+    }, {
+        key: 'setDomain',
+        value: function setDomain(domain) {
+            this.domain = domain;
+        }
+    }, {
+        key: 'setUrl',
+        value: function setUrl(url) {
+            this.url = url;
         }
     }, {
         key: 'isLive',
@@ -6653,15 +6716,16 @@ function _classCallCheck(instance, Constructor) { if (!(instance instanceof Cons
 
 // Manage IO Loaders
 var IOController = function () {
-    function IOController(dataSource, config, extraData) {
+    function IOController(dataSource, config, extraData, mediaElement) {
         _classCallCheck(this, IOController);
 
         this.TAG = 'IOController';
 
+        this.element = mediaElement;
         this._config = config;
         this._extraData = extraData;
 
-        this._stashInitialSize = 1024 * 384; // default initial size: 384KB
+        this._stashInitialSize = 1024 * 768 * this.element.playbackRate; // default initial size: 384KB
         if (config.stashInitialSize != undefined && config.stashInitialSize > 0) {
             // apply from config
             this._stashInitialSize = config.stashInitialSize;
@@ -6669,7 +6733,7 @@ var IOController = function () {
 
         this._stashUsed = 0;
         this._stashSize = this._stashInitialSize;
-        this._bufferSize = 1024 * 1024 * 3; // initial size: 3MB
+        this._bufferSize = 1024 * 2048 * this.element.playbackRate; // initial size: 3MB
         this._stashBuffer = new ArrayBuffer(this._bufferSize);
         this._stashByteStart = 0;
         this._enableStash = true;
@@ -6691,7 +6755,7 @@ var IOController = function () {
 
         this._speedNormalized = 0;
         this._speedSampler = new _speedSampler2.default();
-        this._speedNormalizeList = [64, 128, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096];
+        this._speedNormalizeList = [64, 128, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096, 8192];
 
         this._isEarlyEofReconnecting = false;
 
@@ -6961,16 +7025,12 @@ var IOController = function () {
                 stashSizeKB = normalized;
             } else {
                 if (normalized < 512) {
-                    stashSizeKB = normalized;
+                    stashSizeKB = normalized * 3.0 * this.element.playbackRate;
                 } else if (normalized >= 512 && normalized <= 1024) {
-                    stashSizeKB = Math.floor(normalized * 1.5);
+                    stashSizeKB = Math.floor(normalized * 1.5) * 3.0 * this.element.playbackRate;
                 } else {
-                    stashSizeKB = normalized * 2;
+                    stashSizeKB = normalized * 2 * this.element.playbackRate;
                 }
-            }
-
-            if (stashSizeKB > 8192) {
-                stashSizeKB = 8192;
             }
 
             var bufferSize = stashSizeKB * 1024 + 1024 * 1024 * 1; // stashSize + 1MB
@@ -8078,9 +8138,7 @@ var MozChunkedLoader = function (_BaseLoader) {
             // cors is auto detected and enabled by xhr
 
             // withCredentials is disabled by default
-            if (dataSource.withCredentials) {
-                xhr.withCredentials = true;
-            }
+            xhr.withCredentials = true;
 
             if (_typeof(seekConfig.headers) === 'object') {
                 var headers = seekConfig.headers;
@@ -8373,9 +8431,7 @@ var MSStreamLoader = function (_BaseLoader) {
             xhr.onreadystatechange = this._xhrOnReadyStateChange.bind(this);
             xhr.onerror = this._xhrOnError.bind(this);
 
-            if (dataSource.withCredentials) {
-                xhr.withCredentials = true;
-            }
+            xhr.withCredentials = true;
 
             if (_typeof(seekConfig.headers) === 'object') {
                 var headers = seekConfig.headers;
@@ -8748,9 +8804,7 @@ var RangeLoader = function (_BaseLoader) {
             xhr.onload = this._onLoad.bind(this);
             xhr.onerror = this._onXhrError.bind(this);
 
-            if (dataSource.withCredentials) {
-                xhr.withCredentials = true;
-            }
+            xhr.withCredentials = true;
 
             if (_typeof(seekConfig.headers) === 'object') {
                 var headers = seekConfig.headers;
@@ -9022,8 +9076,12 @@ var AudioPlayer = exports.AudioPlayer = function () {
         this.videoPlayer = mediaElement;
         this.packets = [];
         this.timestamps = [];
+        this.last_timestamp = null;
         this.seekTime = 0;
         this.rate = 1.0;
+        this.hacked_ts = -1;
+        this.gap_offset = 0;
+        this.sample_time = 1000.0 / SAMPLE_RATE; // This is in miliseconds
     }
 
     _createClass(AudioPlayer, [{
@@ -9037,6 +9095,8 @@ var AudioPlayer = exports.AudioPlayer = function () {
         key: 'play',
         value: function play(time) {
             this.seekTime = time;
+            this.last_timestamp = null;
+
             if (this.playing) return;
 
             this.timeBase = this.ctx.currentTime;
@@ -9057,6 +9117,7 @@ var AudioPlayer = exports.AudioPlayer = function () {
 
                 var buf = this.buffers[ts_key]['buffer'];
                 nextTime = timestamp + this.timeBase - this.seekTime;
+                if (nextTime < 0) continue;
                 this.bufSource = this.ctx.createBufferSource();
                 this.bufSource.buffer = buf;
                 this.bufSource.connect(this.gain);
@@ -9137,6 +9198,33 @@ var AudioPlayer = exports.AudioPlayer = function () {
         value: function enqueue(packet, timestamp) {
             if (!this.ctx) return;
 
+            // if (timestamp == this.last_timestamp || timestamp == this.hacked_ts) {
+            //     if (this.hacked_ts == -1) {
+            //         this.hacked_ts = timestamp;
+            //         //console.log('Setting hacked ts: ' + timestamp)
+            //     }
+            //     var old_ts = timestamp;
+            //     timestamp = this.last_timestamp + this.pkt_duration;
+            //     console.log('Setting ' + old_ts + ' to ' + timestamp);
+            //
+            //     // BIG HACK - Some camera/bridges are sending us multiple audio packets with the same timestamp.
+            //     // If we encounter stuttering or jumbled audio issues this is a likely culprit.
+            // } else {
+            //     if (this.last_timestamp && timestamp - this.last_timestamp > this.pkt_duration) {
+            //         this.gap_offset += (timestamp - this.last_timestamp) - this.pkt_duration;
+            //         console.log('Audio gap detected ' + this.last_timestamp + ' ' + timestamp);
+            //         console.log('Offsetting future frames by ' + this.gap_offset + ' samples');
+            //     }
+            //     this.hacked_ts = -1;
+            // }
+
+            if (this.last_timestamp) {
+                timestamp = this.last_timestamp + packet.length * this.sample_time;
+                this.last_timestamp = timestamp;
+            } else {
+                this.last_timestamp = timestamp;
+            }
+
             this.packets.push(packet);
             this.timestamps.push(timestamp);
             var total = 0;
@@ -9174,6 +9262,7 @@ var AudioPlayer = exports.AudioPlayer = function () {
                 var _channel = buf.getChannelData(0);
 
                 timestamp = this.timestamps[0];
+
                 var _offset = 0;
                 for (var _i2 = 0; _i2 < this.packets.length; _i2++) {
                     var _pack = this.packets[_i2];
@@ -9191,6 +9280,11 @@ var AudioPlayer = exports.AudioPlayer = function () {
                 if (this.timeBase == 0) this.timeBase = this.ctx.currentTime;
 
                 var nextTime = timestamp / 1000.0 + this.timeBase - this.seekTime;
+                if (nextTime < 0) {
+                    this.packets = [];
+                    this.timestamps = [];
+                    return;
+                }
                 this.bufSource = this.ctx.createBufferSource();
                 this.bufSource.buffer = buf;
                 this.bufSource.playbackRate.value = this.rate;
@@ -9333,9 +9427,14 @@ var FlvPlayer = function () {
 
         this._mediaInfo = null;
         this._statisticsInfo = null;
+        this.currentCatchupIdentifer = 0;
 
         var chromeNeedIDRFix = _browser2.default.chrome && (_browser2.default.version.major < 50 || _browser2.default.version.major === 50 && _browser2.default.version.build < 2661);
         this._alwaysSeekKeyframe = chromeNeedIDRFix || _browser2.default.msedge || _browser2.default.msie ? true : false;
+
+        this.skip_threshold = 15;
+        this.fastforward_threshold = 2.5;
+        this.resume_threshold = 0.75;
 
         if (this._alwaysSeekKeyframe) {
             this._config.accurateSeek = false;
@@ -9771,6 +9870,11 @@ var FlvPlayer = function () {
                         // .currentTime is consists with .buffered timestamp
                         // Chrome/Edge use DTS, while FireFox/Safari use PTS
                         this._msectl.seek(target);
+                        if (!this._transmuxer) {
+                            window.setTimeout(this._checkAndApplyUnbufferedSeekpoint.bind(this), 50);
+                            return;
+                        }
+
                         this._transmuxer.seek(Math.floor(target * 1000));
                         // set currentTime if accurateSeek, or wait for recommend_seekpoint callback
                         if (this._config.accurateSeek) {
@@ -9874,9 +9978,40 @@ var FlvPlayer = function () {
             this._transmuxer._controller._demuxer._audio.onSeek(e.target);
         }
     }, {
+        key: 'mediaCatchup',
+        value: function mediaCatchup(video, identifier) {
+            var _this4 = this;
+
+            if (identifier != this.currentCatchupIdentifer) return;
+
+            if (!video.paused && !video.ended && video.buffered.length > 0) {
+                var delta = video.buffered.end(0) - video.currentTime;
+                if (delta > this.skip_threshold + this.resume_threshold) {
+                    video.currentTime += delta - this.resume_threshold;
+                } else if (delta > this.fastforward_threshold + this.resume_threshold) {
+                    video.playbackRate = Math.max(2.0, Math.min(16, delta));
+                } else if (delta < this.resume_threshold && video.playbackRate != 1.0) {
+                    video.playbackRate = 1.0;
+                    this.resume_threshold += 0.25;
+                }
+            }
+            setTimeout(function () {
+                _this4.mediaCatchup(video, identifier);
+            }, 100);
+        }
+    }, {
+        key: 'startCatchup',
+        value: function startCatchup(element) {
+            var identifier = ++this.currentCatchupIdentifer;
+            this.mediaCatchup(element, identifier);
+        }
+    }, {
         key: '_onvCanPlay',
         value: function _onvCanPlay(e) {
             this._receivedCanPlay = true;
+            if (this._config.isLive) {
+                this.startCatchup(e.target);
+            }
             this._mediaElement.removeEventListener('canplay', this.e.onvCanPlay);
         }
     }, {
