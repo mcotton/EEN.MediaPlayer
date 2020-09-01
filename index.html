@@ -4,19 +4,30 @@
 <script src="/EEN.MediaPlayer.js"></script>
 <video id="videoElement" style="width: 100%; height:100%;" controls></video>
 <script>
+
+
     var flvjs = EEN.MediaPlayer.flvjs;
     if (flvjs.isSupported()) {
+
         var videoElement = document.getElementById('videoElement');
-        var flvPlayer = flvjs.createPlayer({
-            type: 'flv',
-            url: 'https://login.eagleeyenetworks.com/asset/play/video.flv?id=1003e10b&start_timestamp=stream_mcotton1234&end_timestamp=+30000&A=c012~a419b6e548ea58c9c4ea836de8d85f1a'
-        });
-        flvPlayer.attachMediaElement(videoElement);
-        flvPlayer.load();
-	
-	// Chrome complains about auto-playing, so comment out the following line
-        // flvPlayer.play();
+
+	var flvjs = EEN.MediaPlayer.flvjs,
+            esn = '',
+	    auth_key = '',
+	    start_timestamp = '',
+	    end_timestamp = '';
+
+        var config = new EEN.MediaPlayer.MediaItem(esn);
+        config.setDomain('login.eagleeyenetworks.com')
+        config.setAuthKey(auth_key)
+        config.setStartTime(start_timestamp)
+        config.setEndTime(end_timestamp)
+        EEN.MediaPlayer.startPlayback(config, videoElement);
+
     }
+
+
+
 </script>
 </body>
 </html>
