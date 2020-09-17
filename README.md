@@ -3,7 +3,8 @@
 
 This javascript library follows the same pattern as drivefs and other EEN client libraries. All functionality will be bundled under the “EEN.mediaPlayer” namespace. The API functionality attempts to mimic the mobile playback API as much as possible. 
 
-
+## Updates ##
+09/17/20 - Added logic to the HTML5 media player to attempt to skip frames with invalid timestamps. This will resolve several  instances of "random freezes" during video playback. Especially on heavily loaded bridges
 
 
 

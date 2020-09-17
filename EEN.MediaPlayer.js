@@ -4604,6 +4604,7 @@ var FLVDemuxer = function () {
         this._onScriptDataArrived = null;
         this._onTrackMetadata = null;
         this._onDataAvailable = null;
+        this.lastdts = 0;
 
         this._dataOffset = probeData.dataOffset;
         this._firstParse = true;
@@ -5423,10 +5424,10 @@ var FLVDemuxer = function () {
             var profileCompatibility = v.getUint8(2); // profile_compatibility
             var avcLevel = v.getUint8(3); // AVCLevelIndication
 
-            if (version !== 1 || avcProfile === 0) {
-                this._onError(_demuxErrors2.default.FORMAT_ERROR, 'Flv: Invalid AVCDecoderConfigurationRecord');
-                return;
-            }
+            // if (version !== 1 || avcProfile === 0) {
+            //     this._onError(DemuxErrors.FORMAT_ERROR, 'Flv: Invalid AVCDecoderConfigurationRecord');
+            //     return;
+            // }
 
             this._naluLengthSize = (v.getUint8(4) & 3) + 1; // lengthSizeMinusOne
             if (this._naluLengthSize !== 3 && this._naluLengthSize !== 4) {
@@ -5606,20 +5607,25 @@ var FLVDemuxer = function () {
             }
 
             if (units.length) {
-                var track = this._videoTrack;
-                var avcSample = {
-                    units: units,
-                    length: length,
-                    isKeyframe: keyframe,
-                    dts: dts,
-                    cts: cts,
-                    pts: dts + cts
-                };
-                if (keyframe) {
-                    avcSample.fileposition = tagPosition;
+                if (dts + cts > this.lastdts || keyframe) {
+                    var track = this._videoTrack;
+                    var avcSample = {
+                        units: units,
+                        length: length,
+                        isKeyframe: keyframe,
+                        dts: dts,
+                        cts: cts,
+                        pts: dts + cts
+                    };
+                    if (keyframe) {
+                        avcSample.fileposition = tagPosition;
+                    }
+                    track.samples.push(avcSample);
+                    track.length += length;
+                    this.lastdts = dts + cts;
+                } else {
+                    _logger2.default.w(this.TAG, 'DTS < current. Skipping frame (' + (dts + cts) + ' < ' + this.lastdts);
                 }
-                track.samples.push(avcSample);
-                track.length += length;
             }
         }
     }, {
@@ -5802,8 +5808,12 @@ var SPSParser = function () {
             var src_length = src.byteLength;
             var dst = new Uint8Array(src_length);
             var dst_idx = 0;
+            var start_offset = 0;
+            if (src[3] === 0x01 && src[2] === 0x00 && src[1] === 0x0 && src[0] === 0x00) {
+                start_offset = 4;
+            }
 
-            for (var i = 0; i < src_length; i++) {
+            for (var i = start_offset; i < src_length; i++) {
                 if (i >= 2) {
                     // Unescape: Skip 0x03 after 00 00
                     if (src[i] === 0x03 && src[i - 1] === 0x00 && src[i - 2] === 0x00) {
@@ -6249,7 +6259,7 @@ var MediaItem = function () {
         this.api_key = null;
         this.options = null;
         this.url = null;
-        this.domain = 'window.location.host';
+        this.domain = window.location.host;
     }
 
     _createClass(MediaItem, [{
